@@ -1,4 +1,7 @@
 ﻿using System.Diagnostics;
+using System.Net;
+using System.Runtime.Intrinsics.Arm;
+using System.Threading.Tasks;
 
 namespace HttpClientRequests;
 
@@ -6,65 +9,70 @@ public static class Program
 {
     private const int TEST_COUNT = 100_000_000;
 
-    public static async Task Main(string[] args)
+    public static async Task Main()
     {
-        var tasks = new List<Task>();
+        var proxyUserTasks = new List<Task>();
+
         var success = 0;
         var total = 0;
 
         var globalStopWatch = new Stopwatch();
-        double rps, rpm, successRate = 0;
-
+        double rps,  successRate = 0;
+        double rpm = 0;
         globalStopWatch.Start();
 
         var client = HttpClientSingleton.Instance;
 
-        var timer = new Timer(state =>
-        {
-            rps = success / globalStopWatch.Elapsed.TotalSeconds;
-            rpm = rps * 60;
-            successRate = success / (float) total * 100.00;
+        var response = await client.GetAsync($"https://localhost:7064/test"); // letting the proxy server set it's authentication cache before stress test
+        response.EnsureSuccessStatusCode();
+        Console.WriteLine(await response.Content.ReadAsStringAsync());
+        
+        await Task.Delay(500);
 
-            // Note that this isn't the right CSV format.
-            File.AppendAllText("C:\\Users\\user\\Desktop\\results.csv", $"{DateTime.Now};{rpm:N2}\n");
-        }, null, 500, 500);
-
+        var tasks = new List<Task>();
         while (total < TEST_COUNT)
         {
             var x = Task.Run(async () =>
             {
                 try
                 {
-                    var response = await client.GetAsync("https://localhost:7064/test");
+                    var response = await client.GetAsync($"https://localhost:7064/test");
+                    //response.EnsureSuccessStatusCode();
+                    
 
-                    response.EnsureSuccessStatusCode();
+                    //Console.WriteLine(await response.Content.ReadAsStringAsync());
 
-                    Interlocked.Increment(ref success);
+                    if (response.IsSuccessStatusCode)
+                        Interlocked.Increment(ref success);
+                    else
+                        Console.WriteLine(response.StatusCode);
+
+                    //await Task.Delay(1000);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message + " " + ex.InnerException?.Message);
                 }
                 finally
                 {
                     Interlocked.Increment(ref total);
                 }
             });
-
             tasks.Add(x);
 
-            if (tasks.Count > 500)
+            if (tasks.Count >= 500)
             {
                 rps = success / globalStopWatch.Elapsed.TotalSeconds;
                 rpm = rps * 60;
-                successRate = success / (float) total * 100.00;
-
-                Console.Write($"Success: {success}\tTotal: {total}\tSuccess Rate: {successRate:N2}%\tRPS: {rps:N2}\tRPM: {rpm:N2}\t\n");
-
+                successRate = success / (float)total * 100.00;
+                Console.Title = $"{rpm} {tasks.Count}";
+                //Task.WaitAny(tasks.ToArray());
                 tasks.RemoveAll(t => t.IsCompleted);
             }
         }
 
-        Task.WhenAll(tasks)
+        Task.WhenAll(proxyUserTasks)
             .Wait();
         Console.ReadKey();
-
-        await timer.DisposeAsync();
     }
 }
